@@ -15,11 +15,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.inject.Inject;
 import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
+import net.runelite.api.GameState;
 import net.runelite.api.MessageNode;
 import net.runelite.api.events.BeforeRender;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.Player;
 import net.runelite.api.events.MenuOptionClicked;
@@ -45,6 +48,7 @@ import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.Text;
 
+@Slf4j
 @PluginDescriptor(
 	name = "Chat Fade",
 	description = "Shows chat messages as fading floating text above the chatbox",
@@ -370,6 +374,8 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 			return;
 		}
 
+		logBroadcastDiagnostics(type, chatMessage.getMessage());
+
 		String rawMessage = stripIngestPrefixes(expanded);
 		String cleanedText = toDisplayText(rawMessage);
 
@@ -462,6 +468,8 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 			.rawText(chatMessage.getMessage())
 			.senderIcons(senderIcons)
 			.censored(censored)
+			.pendingIcons(!censored && hasUnresolvedIcon(rawForSpans))
+			.spanSource(rawForSpans)
 			.channelName(config.showChannelName() ? channelName(chatMessage.getSender()) : null)
 			.build();
 
@@ -1016,6 +1024,125 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 	}
 
 	/**
+	 * Logs the untouched text of broadcasts that have been reported as rendering wrongly.
+	 *
+	 * <p>Quest completions lose the quest name for some people (#32), and the formats that
+	 * could explain it all render correctly when run through this pipeline — so the game is
+	 * evidently sending something other than what the logs from six months ago show. The
+	 * message is gone by the time anyone notices on screen, so capture it as it arrives.
+	 *
+	 * <p>Debug level, so it costs nothing unless someone turns it on, and deliberately narrow:
+	 * only the broadcast shapes under investigation, never ordinary chat, which would amount
+	 * to logging private conversations.
+	 */
+	private void logBroadcastDiagnostics(ChatMessageType type, String raw)
+	{
+		if (!log.isDebugEnabled() || raw == null)
+		{
+			return;
+		}
+
+		if (type != ChatMessageType.CLAN_MESSAGE
+			&& type != ChatMessageType.CLAN_GUEST_MESSAGE
+			&& type != ChatMessageType.CLAN_GIM_MESSAGE)
+		{
+			return;
+		}
+
+		if (raw.contains("completed a quest"))
+		{
+			log.debug("Chat Fade raw quest broadcast [{}]: {}", type, raw);
+		}
+	}
+
+	/**
+	 * Rebuilds the spans of a message whose icons were not available when it arrived.
+	 *
+	 * <p>Costs nothing in the normal case: the flag is only ever set for a message that had
+	 * an unresolvable tag, and it clears the moment the icon appears, so this stops as soon
+	 * as it has done its job rather than running for the life of every message.
+	 */
+	private void retryPendingIcons(FadingMessage msg)
+	{
+		if (!msg.isPendingIcons())
+		{
+			return;
+		}
+
+		if (!config.showChatIcons())
+		{
+			// Icons are off, so there is nothing left to wait for.
+			msg.setPendingIcons(false);
+			return;
+		}
+
+		if (hasUnresolvedIcon(msg.getSpanSource()))
+		{
+			return;
+		}
+
+		List<ColorSpan> spans = parseColorSpans(msg.getSpanSource(), msg.getColor(), iconResolver());
+		if (!config.preserveInlineColors())
+		{
+			spans = dropSpanColours(spans, msg.getColor());
+		}
+		msg.setColorSpans(applyLootHighlight(spans, msg.getText(), msg.getColor()));
+		msg.setPendingIcons(false);
+	}
+
+	/**
+	 * Drops converted icons when the client rebuilds its sprite array.
+	 *
+	 * <p>{@link ChatIcons} otherwise only notices a rebuild when the array changes length,
+	 * which misses one rebuilt at the same size — a logging out and back in, or a plugin
+	 * re-registering its icons. The stale entries that follow are what made emoji come back
+	 * blank for some people and not others.
+	 */
+	@Subscribe
+	public void onGameStateChanged(GameStateChanged event)
+	{
+		GameState state = event.getGameState();
+		if (state == GameState.LOGIN_SCREEN || state == GameState.HOPPING || state == GameState.LOGGING_IN)
+		{
+			chatIcons.clear();
+		}
+	}
+
+	/**
+	 * Whether any {@code <img=N>} in this message could not be resolved yet.
+	 *
+	 * <p>Icons are registered asynchronously — the Emoji plugin adds its sprites after the
+	 * client starts — so a message arriving in that window finds nothing at its index. The
+	 * tag is dropped rather than drawn, and because the plain text has no icon either the
+	 * whole body can vanish, leaving just "name:". Flagging it lets the per-tick pass try
+	 * again instead of losing the icon for the life of the message.
+	 */
+	private boolean hasUnresolvedIcon(String raw)
+	{
+		if (raw == null || !config.showChatIcons())
+		{
+			return false;
+		}
+
+		Matcher matcher = ChatIcons.IMG_TAG.matcher(raw);
+		while (matcher.find())
+		{
+			try
+			{
+				if (chatIcons.resolve(client, Integer.parseInt(matcher.group(1))) == null)
+				{
+					return true;
+				}
+			}
+			catch (NumberFormatException ex)
+			{
+				// Not an index we could ever resolve; nothing to wait for.
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Censors the text that floats above a player's head.
 	 *
 	 * <p>Overhead text never goes through the chat message pipeline, so the ingest filter
@@ -1155,6 +1282,8 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 	{
 		for (FadingMessage msg : messages)
 		{
+			retryPendingIcons(msg);
+
 			MessageNode node = msg.getMessageNode();
 			if (node == null)
 			{
@@ -1171,14 +1300,20 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 				if (!cleanedUpdate.equals(msg.getText()))
 				{
 					msg.setText(cleanedUpdate);
+
 					// Emoji reach us here, not at ingest: the Emoji plugin rewrites the node
-				// after ChatMessage has already fired, so this path must resolve icons too.
-				List<ColorSpan> updatedSpans = parseColorSpans(expanded, msg.getColor(), iconResolver());
-				if (!config.preserveInlineColors())
-				{
-					updatedSpans = dropSpanColours(updatedSpans, msg.getColor());
-				}
-				msg.setColorSpans(updatedSpans);
+					// after ChatMessage has already fired, so this path must resolve icons too.
+					List<ColorSpan> updatedSpans = parseColorSpans(expanded, msg.getColor(), iconResolver());
+					if (!config.preserveInlineColors())
+					{
+						updatedSpans = dropSpanColours(updatedSpans, msg.getColor());
+					}
+					msg.setColorSpans(updatedSpans);
+
+					// The rewrite is the text the spans now describe, and it may itself carry
+					// an icon that is not registered yet — keep both in step with the retry.
+					msg.setSpanSource(expanded);
+					msg.setPendingIcons(hasUnresolvedIcon(expanded));
 					msg.setMessageNode(null);
 				}
 			}

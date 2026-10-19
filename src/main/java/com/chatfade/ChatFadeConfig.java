@@ -127,6 +127,22 @@ public interface ChatFadeConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "bottomPadding",
+		name = "Bottom Padding",
+		description = "Gap between the overlay and the chatbox below it. Only applies when "
+			+ "'Anchored / Draggable Overlay' is off, since an anchored overlay sits wherever "
+			+ "it is dragged.",
+		position = 28,
+		section = displaySection
+	)
+	@Units(Units.PIXELS)
+	@Range(min = 0, max = 100)
+	default int bottomPadding()
+	{
+		return 4;
+	}
+
+	@ConfigItem(
 		keyName = "anchoredOverlay",
 		name = "Anchored / Draggable Overlay",
 		description = "Position the overlay with RuneLite's overlay system so it can be dragged "

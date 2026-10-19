@@ -54,6 +54,21 @@ public class FadingMessage
 	private int count = 1;
 
 	/**
+	 * Whether this message still has an {@code <img=N>} that did not resolve.
+	 *
+	 * <p>Kept so the per-tick pass can rebuild the spans once the sprite exists, rather than
+	 * the icon being lost for good because the message happened to arrive before the plugin
+	 * that owns it finished registering.
+	 */
+	private boolean pendingIcons;
+
+	/**
+	 * The message text the spans were built from, so they can be rebuilt later without the
+	 * MessageNode, which a censored message deliberately does not keep.
+	 */
+	private String spanSource;
+
+	/**
 	 * Whether the built-in message filter rewrote this message.
 	 *
 	 * <p>Stops the Chat Filter plugin integration from overwriting our censored text with the

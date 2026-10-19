@@ -28,7 +28,6 @@ import net.runelite.client.ui.overlay.OverlayPriority;
 public class ChatFadeOverlay extends Overlay
 {
 	private static final int LINE_SPACING = 1;
-	private static final int PADDING_BOTTOM = 4;
 	private static final int PADDING_LEFT = 5;
 	private static final int SHADOW_OFFSET = 1;
 	private static final int ICON_SPACING = 2;
@@ -105,7 +104,7 @@ public class ChatFadeOverlay extends Overlay
 	@Override
 	public Dimension render(Graphics2D graphics)
 	{
-		boolean chatboxHidden = isChatboxInputHidden();
+		boolean chatboxHidden = isChatboxAway();
 
 		if (config.onlyWhenHidden() && !chatboxHidden)
 		{
@@ -709,7 +708,7 @@ public class ChatFadeOverlay extends Overlay
 			anchorY = Math.min(anchorY, splitPmY);
 		}
 
-		return anchorY - PADDING_BOTTOM;
+		return anchorY - config.bottomPadding();
 	}
 
 	private int calculateBaseY(int lineHeight, int messageCount, boolean hasTypingLine)
@@ -745,7 +744,7 @@ public class ChatFadeOverlay extends Overlay
 		int typingOffset = hasTypingLine ? lineHeight + LINE_SPACING : 0;
 		int totalHeight = messageCount * (lineHeight + LINE_SPACING) - LINE_SPACING;
 
-		return chatboxTop - totalHeight - PADDING_BOTTOM - typingOffset;
+		return chatboxTop - totalHeight - config.bottomPadding() - typingOffset;
 	}
 
 	/**
@@ -808,6 +807,32 @@ public class ChatFadeOverlay extends Overlay
 	{
 		Widget chatboxInput = getChatboxInput();
 		return chatboxInput == null || chatboxInput.isHidden();
+	}
+
+	/**
+	 * Whether the chatbox is out of the way, so the overlay is what the player is reading.
+	 *
+	 * <p>A hidden input alone is not enough to decide this. Key Remapping hides it while the
+	 * chat stays open, and the overlay should show — that is why the input was checked in the
+	 * first place. But the game also hides it for a moment whenever a private message is sent,
+	 * and treating that as a collapsed chatbox made the overlay flash back on top of an open
+	 * chat, taking the split private messages with it (#34, reported by @hydroxiide).
+	 *
+	 * <p>So the chat area decides it, and a hidden input only counts when Key Remapping is
+	 * what hid it.
+	 */
+	private boolean isChatboxAway()
+	{
+		// Resolved first and unconditionally: fetching the input widget is what detects Key
+		// Remapping, so short-circuiting past it would leave that flag permanently false.
+		boolean inputHidden = isChatboxInputHidden();
+
+		if (isChatboxCollapsed())
+		{
+			return true;
+		}
+
+		return keyRemapping && inputHidden;
 	}
 
 	private boolean chatInputEnabled()

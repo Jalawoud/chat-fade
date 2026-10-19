@@ -344,7 +344,7 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 			return;
 		}
 
-		if (!isAllowedByChatFilter(type))
+		if (!isAllowedByChatFilter(type, chatMessage.getName()))
 		{
 			return;
 		}
@@ -1627,7 +1627,12 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 		}
 	}
 
-	private boolean isAllowedByChatFilter(ChatMessageType type)
+	/**
+	 * Decides whether a message the game's own chat tabs are hiding should still fade in.
+	 *
+	 * @param sender the message's sender, needed for the Public tab's "Friends" state
+	 */
+	private boolean isAllowedByChatFilter(ChatMessageType type, String sender)
 	{
 		switch (type)
 		{
@@ -1688,12 +1693,13 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 			case AUTOTYPER:
 			case MODAUTOTYPER:
 			{
+				// The Public tab has four states, not three: On, Friends, Off and Hide.
+				// Only "Off" used to be honoured, so someone who set Public to Hide still
+				// saw every passing player fade in here while the game hid them everywhere
+				// else.
 				String state = getTabFilterText(InterfaceID.Chatbox.CHAT_PUBLIC_FILTER);
-				if ("Off".equals(state))
-				{
-					return false;
-				}
-				return true;
+				logUnknownPublicFilterState(state);
+				return allowedByPublicFilter(state, isSelfOrFriend(sender));
 			}
 
 			case PRIVATECHAT:
@@ -1749,6 +1755,76 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 			default:
 				return true;
 		}
+	}
+
+	/**
+	 * Applies the Public chat tab's state to one message.
+	 *
+	 * <p>Kept separate and free of client state so the four-way behaviour is testable.
+	 * An unrecognised state shows the message: the states are read from widget text, and
+	 * going quiet on something unexpected would hide public chat with no way to tell why.
+	 *
+	 * @param selfOrFriend whether the sender is you or a friend, which is all "Friends" keeps
+	 */
+	static boolean allowedByPublicFilter(String state, boolean selfOrFriend)
+	{
+		if ("Off".equals(state) || "Hide".equals(state))
+		{
+			return false;
+		}
+
+		if ("Friends".equals(state))
+		{
+			return selfOrFriend;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Reports a Public tab state we do not act on.
+	 *
+	 * <p>The states are read as widget text rather than from a varbit, so the exact wording
+	 * is an assumption. If the game labels a state something other than the four handled
+	 * here, this says so in the log instead of the setting quietly doing nothing.
+	 */
+	private void logUnknownPublicFilterState(String state)
+	{
+		if (!log.isDebugEnabled() || state == null)
+		{
+			return;
+		}
+
+		if (!"On".equals(state) && !"Off".equals(state)
+			&& !"Hide".equals(state) && !"Friends".equals(state))
+		{
+			log.debug("Chat Fade: unhandled Public chat tab state \"{}\"", state);
+		}
+	}
+
+	/** @return true when this name is the local player or one of their friends */
+	private boolean isSelfOrFriend(String sender)
+	{
+		if (sender == null || sender.isEmpty())
+		{
+			return false;
+		}
+
+		String name = Text.standardize(sender);
+		if (name.isEmpty())
+		{
+			return false;
+		}
+
+		Player local = client.getLocalPlayer();
+		if (local != null && local.getName() != null
+			&& name.equals(Text.standardize(local.getName())))
+		{
+			// Your own messages stay visible on Friends, exactly as they do in the chatbox.
+			return true;
+		}
+
+		return client.isFriended(name, false);
 	}
 
 	private String getTabFilterText(int widgetId)

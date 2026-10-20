@@ -450,6 +450,9 @@ public class ChatFadePlugin extends Plugin implements KeyListener
 					// filter's censoring on a message we have already rewritten.
 					target.setMessageId(messageNode.getId());
 				}
+				// A repeat is the newest event, even when its text is collapsed.
+				messages.remove(target);
+				messages.add(target);
 				return;
 			}
 		}
